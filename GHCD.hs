@@ -1,6 +1,7 @@
 -- | GHC Dump Tool
 
 -- You may need to do: $ ghc -package ghc GHCD.h
+-- Some options are commented out for GHC 7.0.3 vs GHC 8.0.2
 
 import BasicTypes
 import Coercion
@@ -47,10 +48,12 @@ mkIOStr obj = runGhc (Just libdir) $ do
 
 -- | Make Module [Guts]
 --   Used for Core Program.
-mkModuleGutss :: FilePath -> FilePath -> IO [ModGuts]
-mkModuleGutss proj src = runGhc (Just libdir) $ do
+mkCompileClosure :: FilePath -> FilePath ->
+                    IO ([(ModSummary, ModGuts)], DynFlags, HscEnv) 
+mkCompileClosure proj src = runGhc (Just libdir) $ do
     dflags <- getSessionDynFlags
     setSessionDynFlags (dflags {importPaths = [proj]})
+    env    <- getSession
     target <- guessTarget src Nothing
     setTargets [target]
     load LoadAllTargets
@@ -61,45 +64,35 @@ mkModuleGutss proj src = runGhc (Just libdir) $ do
     tmods <- (sequence . map typecheckModule) pmods
     dmods <- (sequence . map desugarModule) tmods
     let mod_gutss = map coreModule dmods
-    return mod_gutss
+
+    let zipd = (zip mod_graph mod_gutss, dflags, env)
+    return zipd
 
 -- | Make Multiple Core Programs
 --   Concat them, because `type CoreProgram = [CoreBind]`.
 mkMultiCoreProgram :: FilePath -> FilePath -> IO CoreProgram
 mkMultiCoreProgram proj src = do
-    mod_gutss <- mkModuleGutss proj src
-    let acc_prog = concatMap mg_binds mod_gutss
+    (sums_gutss, dflags, env) <- mkCompileClosure proj src
+    let acc_prog = concatMap (mg_binds . snd) sums_gutss
     return acc_prog
 
 -- | Make Multiple [StgBinding]
 mkMultiStgBindings :: FilePath -> FilePath -> IO [StgBinding]
-mkMultiStgBindings proj src = runGhc (Just libdir) $ do
-    dflags <- getSessionDynFlags
-    setSessionDynFlags (dflags {importPaths = [proj]})
-    env <- getSession
-    target <- guessTarget src Nothing
-    setTargets [target]
-    load LoadAllTargets
+mkMultiStgBindings proj src = do
+    (sums_gutss, dflags, env) <- mkCompileClosure proj src
+    let sums    = map fst sums_gutss
+    let md_lcs  = map (\s -> (ms_mod s, ms_location s)) sums
+    let m_bndss = map (mg_binds . snd) sums_gutss
+    let tcss    = map (mg_tcs . snd) sums_gutss
+    
+    let z1 = zip3 md_lcs m_bndss tcss
+    preps <- sequence $ map (\((m, l), b, t) -> corePrepPgm env l b t) z1
+    -- preps <- sequence $ map (\(m, l), b, t) -> corePrepPgm env m l b t) z1
 
-    mod_graph <- getModuleGraph
-    let locs = map ms_location mod_graph
-    pmods <- (sequence . map parseModule) mod_graph
-    tmods <- (sequence . map typecheckModule) pmods
-    dmods <- (sequence . map desugarModule) tmods
-    let mod_gutss = map coreModule dmods
-    let locs   = map ms_location mod_graph
-    let bindss = map mg_binds mod_gutss
-    let tcss   = map mg_tcs mod_gutss
-
-    -- let z1 = zip4 (map ms_module mod_graph) locs bindss tcss  -- GHC 8.0.2
-    let z1 = zip3 locs bindss tcss
-    -- preps <- liftIO $ sequence $ map (\(m,l,b,t)->corePrepPgm env m lb t) z1
-    preps <- liftIO $ sequence $ map (\(l,b,t) -> corePrepPgm env l b t) z1
-
-    let z2 = zip (map mg_module mod_gutss) preps
-    bindss <- liftIO $ sequence $ map (\(m, p) -> coreToStg dflags m p) z2
-    let acc_binds = concat bindss
-    return acc_binds
+    let z2 = zip (map fst md_lcs) preps
+    stg_bndss <- sequence $ map (\(m, p) -> coreToStg dflags m p) z2
+    let acc_bnds = concat stg_bndss
+    return acc_bnds
 
 err_msg = "GHCD [--core | --stg] <proj-dir> <src-file>"
 
