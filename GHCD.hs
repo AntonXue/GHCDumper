@@ -25,8 +25,8 @@ import PrimOp
 import SrcLoc
 import StgSyn
 import TyCon
--- import TyCoRep  -- GHC 8.0.2
-import TypeRep  -- GHC 7.10.3
+import TyCoRep  -- GHC 8.0.2
+-- import TypeRep  -- GHC 7.10.3
 import Type
 import UniqSet
 import Unique
@@ -64,21 +64,18 @@ mkCompileClosure proj src = runGhc (Just libdir) $ do
     load LoadAllTargets
 
     mod_graph <- getModuleGraph
-    pmods <- (sequence . map parseModule) mod_graph
-    tmods <- (sequence . map typecheckModule) pmods
-    dmods <- (sequence . map desugarModule) tmods
+    pmods     <- mapM parseModule mod_graph
+    tmods     <- mapM typecheckModule pmods
+    dmods     <- mapM desugarModule tmods
     let mod_gutss = map coreModule dmods
-
-    let zipd = (zip mod_graph mod_gutss, dflags', env)
-    return zipd
+    return (zip mod_graph mod_gutss, dflags', env)
 
 -- | Make Multiple Core Programs
 --   Concat them, because `type CoreProgram = [CoreBind]`.
 mkMultiCoreProgram :: FilePath -> FilePath -> IO CoreProgram
 mkMultiCoreProgram proj src = do
     (sums_gutss, dflags, env) <- mkCompileClosure proj src
-    let acc_prog = concatMap (mg_binds . snd) sums_gutss
-    return acc_prog
+    return $ concatMap (mg_binds . snd) sums_gutss
 
 -- | Make Multiple [StgBinding]
 mkMultiStgBindings :: FilePath -> FilePath -> IO [StgBinding]
@@ -90,13 +87,12 @@ mkMultiStgBindings proj src = do
     let tcss    = map (mg_tcs . snd) sums_gutss
     
     let z1 = zip3 md_lcs m_bndss tcss
-    preps <- sequence $ map (\((m, l), b, t) -> corePrepPgm env l b t) z1
-    -- preps <- sequence $ map (\(m, l), b, t) -> corePrepPgm env m l b t) z1
+    -- preps <- sequence $ map (\((m, l), b, t) -> corePrepPgm env l b t) z1
+    preps <- sequence $ map (\((m, l), b, t) -> corePrepPgm env m l b t) z1
 
     let z2 = zip (map fst md_lcs) preps
     stg_bndss <- sequence $ map (\(m, p) -> coreToStg dflags m p) z2
-    let acc_bnds = concat stg_bndss
-    return acc_bnds
+    return $ concat stg_bndss
 
 err_msg = "GHCD [--core | --stg] <proj-dir> <src-file>"
 
