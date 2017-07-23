@@ -1,5 +1,5 @@
 # GHCDumper
 ```
 ghc -package ghc GHCD.hs
-./GHCD [--core | --stg] path/to/proj/dir/ path/to/proj/dir/files/src.hs
+./GHCD [--core | --stg] path-to/projdir/ path-to/projdir/files/src.hs
 ```
